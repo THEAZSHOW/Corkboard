@@ -1,0 +1,5 @@
+{
+  "name": "Infinite Corkboard",
+  "description": "An interactive, infinite corkboard application where users can add and manipulate sticky notes, images, and YouTube videos. Pan and zoom across the canvas to organize your ideas.",
+  "requestFramePermissions": []
+}

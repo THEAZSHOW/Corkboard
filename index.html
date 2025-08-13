@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Infinite Corkboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Dependencies for in-browser transpilation -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Emoji Mart -->
+    <script src="https://unpkg.com/emoji-mart@latest/dist/browser.js"></script>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Patrick+Hand&family=Inter:wght@400;500;700&display=swap');
+      body {
+        font-family: 'Inter', sans-serif;
+        overscroll-behavior: none;
+      }
+      .sticky-note-font {
+        font-family: 'Patrick Hand', cursive;
+      }
+      .board-item-selected {
+        box-shadow: 0 0 0 2px #3b82f6, 0 25px 50px rgba(0,0,0,0.4);
+        z-index: 999 !important;
+      }
+      .strong-shadow {
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.2);
+      }
+      .theme-white { background-color: #ffffff; }
+      .theme-dark { background-color: #1f2937; }
+      .theme-orange { background-color: #fef3c7; }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react/": "https://esm.sh/react@^19.1.1/",
+    "react": "https://esm.sh/react@^19.1.1",
+    "react-dom/": "https://esm.sh/react-dom@^19.1.1/"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <div id="root"></div>
+    <script type="text/babel" data-presets="react,typescript">
+      // All application code is bundled here. The original .ts/.tsx files are no longer necessary for deployment.
+
+      // From: types.ts
+      const ItemType = {
+        Note: 'NOTE',
+        Image: 'IMAGE',
+        Video: 'VIDEO',
+        Emoji: 'EMOJI',
+      };
+
+      // From: constants.ts
+      const PIN_URL = 'https://i.ibb.co/cPJm1cG/image-from-rawpixel-id-8314917-png.png';
+      const ZOOM_MIN = 0.2;
+      const ZOOM_MAX = 3;
+      const ZOOM_SENSITIVITY = 0.001;
+      const NOTE_COLORS = [
+        'bg-yellow-200', 'bg-pink-200', 'bg-purple-200', 'bg-green-200', 'bg-blue-200', 'bg-gray-200',
+      ];
+      const INITIAL_Z_INDEX = 10;
+      const FONT_SIZE_MIN = 12;
+      const FONT_SIZE_DEFAULT = 32;
+      
+      // From: hooks/usePersistentHistory.ts
+      function getStorageValue(key, defaultValue) {
+        const saved = localStorage.getItem(key);
+        if (saved) {
+          try {
+            return JSON.parse(saved);
+          } catch (e) {
+            console.error("Failed to parse localStorage value for history", e);
+            return defaultValue;
+          }
+        }
+        return defaultValue;
+      }
+
+      const usePersistentHistory = (storageKey, initialPresent) => {
+        const [timeline, setTimeline] = React.useState(() => {
+          const presentFromStorage = getStorageValue(storageKey, initialPresent);
+          return {
+            past: [],
+            present: presentFromStorage,
+            future: [],
+          };
+        });
+
+        React.useEffect(() => {
+          localStorage.setItem(storageKey, JSON.stringify(timeline.present));
+        }, [storageKey, timeline.present]);
+
+        const canUndo = timeline.past.length > 0;
+        const canRedo = timeline.future.length > 0;
+
+        const setState = React.useCallback((action) => {
+          setTimeline(current => {
+            const newPresent = typeof action === 'function'
+              ? action(current.present)
+              : action;
+            
+            if (JSON.stringify(newPresent) === JSON.stringify(current.present)) {
+              return current;
+            }
+
+            return {
+              past: [...current.past, current.present],
+              present: newPresent,
+              future: [],
+            };
+          });
+        }, []);
+
+        const undo = React.useCallback(() => {
+          setTimeline(current => {
+            if (current.past.length === 0) return current;
+            const previous = current.past[current.past.length - 1];
+            const newPast = current.past.slice(0, current.past.length - 1);
+            return {
+              past: newPast,
+              present: previous,
+              future: [current.present, ...current.future],
+            };
+          });
+        }, []);
+
+        const redo = React.useCallback(() => {
+          setTimeline(current => {
+            if (current.future.length === 0) return current;
+            const next = current.future[0];
+            const newFuture = current.future.slice(1);
+            return {
+              past: [...current.past, current.present],
+              present: next,
+              future: newFuture,
+            };
+          });
+        }, []);
+
+        return { state: timeline.present, setState, undo, redo, canUndo, canRedo };
+      };
+
+      // From: hooks/useBoardInteraction.ts
+      const useBoardInteraction = (ref) => {
+        const [pan, setPan] = React.useState({ x: 0, y: 0 });
+        const [zoom, setZoom] = React.useState(1);
+        const isPanning = React.useRef(false);
+        const lastPointerPosition = React.useRef({ x: 0, y: 0 });
+
+        React.useEffect(() => {
+          const element = ref.current;
+          if (!element) return;
+
+          const handlePointerDown = (e) => {
+            if (e.target.isEqualNode(element) || e.target.parentElement.isEqualNode(element)) {
+              isPanning.current = true;
+              lastPointerPosition.current = { x: e.clientX, y: e.clientY };
+              element.style.cursor = 'grabbing';
+            }
+          };
+
+          const handlePointerUp = () => {
+            isPanning.current = false;
+            element.style.cursor = 'grab';
+          };
+
+          const handlePointerMove = (e) => {
+            if (!isPanning.current) return;
+            const dx = e.clientX - lastPointerPosition.current.x;
+            const dy = e.clientY - lastPointerPosition.current.y;
+            setPan(prevPan => ({ x: prevPan.x + dx, y: prevPan.y + dy }));
+            lastPointerPosition.current = { x: e.clientX, y: e.clientY };
+          };
+
+          const handleWheel = (e) => {
+            e.preventDefault();
+            const rect = element.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom - e.deltaY * ZOOM_SENSITIVITY));
+            
+            const mousePointTo = {
+              x: (mouseX - pan.x) / zoom,
+              y: (mouseY - pan.y) / zoom,
+            };
+
+            setPan({
+              x: mouseX - mousePointTo.x * newZoom,
+              y: mouseY - mousePointTo.y * newZoom,
+            });
+
+            setZoom(newZoom);
+          };
+
+          element.addEventListener('pointerdown', handlePointerDown);
+          window.addEventListener('pointerup', handlePointerUp);
+          window.addEventListener('pointermove', handlePointerMove);
+          element.addEventListener('wheel', handleWheel, { passive: false });
+
+          return () => {
+            element.removeEventListener('pointerdown', handlePointerDown);
+            window.removeEventListener('pointerup', handlePointerUp);
+            window.removeEventListener('pointermove', handlePointerMove);
+            element.removeEventListener('wheel', handleWheel);
+          };
+        }, [pan.x, pan.y, ref, zoom]);
+
+        return { pan, zoom, setZoom };
+      };
+
+      // From: components/ImageItem.tsx
+      const ImageItem = ({ item }) => {
+        const isPng = item.content.startsWith('data:image/png;');
+        return (
+          <div className="w-full h-full flex items-center justify-center bg-transparent">
+            <img
+              src={item.content}
+              alt="User content"
+              className="w-full h-full object-contain"
+              style={isPng ? { filter: 'drop-shadow(0 8px 10px rgba(0,0,0,0.25))' } : {}}
+              draggable={false}
+              onError={(e) => {
+                e.target.src = 'https://i.imgur.com/80idhS4.png';
+                e.target.alt = 'Error loading image';
+              }}
+            />
+          </div>
+        );
+      };
+
+      // From: components/VideoItem.tsx
+      const VideoItem = ({ item, isSelected }) => {
+        const getYouTubeEmbedUrl = (url) => {
+          const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|shorts\/|watch\?v=|&v=)([^#&?]*).*/;
+          const match = url.match(regExp);
+          if (match && match[2].length === 11) {
+            return `https://www.youtube.com/embed/${match[2]}`;
+          }
+          return null;
+        };
+        const embedUrl = getYouTubeEmbedUrl(item.content);
+        return (
+          <div className="w-full h-full bg-black flex items-center justify-center text-white">
+            {embedUrl ? (
+              <iframe
+                width="100%"
+                height="100%"
+                src={embedUrl}
+                title="YouTube video player"
+                frameBorder="0"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowFullScreen
+                style={{ pointerEvents: isSelected ? 'auto' : 'none' }}
+              ></iframe>
+            ) : (
+              <p className="p-4 text-center text-red-400">Invalid YouTube URL</p>
+            )}
+          </div>
+        );
+      };
+
+      // From: components/EmojiItem.tsx
+      const EmojiItem = ({ item }) => {
+        return (
+          <div className="w-full h-full flex items-center justify-center bg-transparent">
+            <span
+              style={{
+                fontSize: Math.min(item.width, item.height) * 0.8,
+                textShadow: '0 5px 15px rgba(0,0,0,0.25)',
+              }}
+              className="select-none"
+            >
+              {item.content}
+            </span>
+          </div>
+        );
+      };
+
+      // From: components/StickyNote.tsx
+      const StickyNote = ({ item, onUpdate, isSelected }) => {
+        const FontSizeButton = ({ onClick, children }) => (
+          <button
+            onClick={onClick}
+            className="w-8 h-8 flex items-center justify-center bg-black/10 hover:bg-black/20 rounded-full text-sm font-bold text-gray-700"
+            onPointerDown={e => e.stopPropagation()}
+          >
+            {children}
+          </button>
+        );
+
+        const currentFontSize = item.fontSize || FONT_SIZE_DEFAULT;
+
+        const changeFontSize = (direction) => {
+          const newSize = direction === 'increase' 
+            ? currentFontSize + 2
+            : Math.max(FONT_SIZE_MIN, currentFontSize - 2);
+          onUpdate(item.id, { fontSize: newSize });
+        };
+        
+        return (
+          <div className={`w-full h-full p-6 pt-20 relative ${item.color || 'bg-yellow-200'}`}>
+            {isSelected && (
+              <div className="absolute top-4 right-4 flex space-x-2 z-20">
+                  <FontSizeButton onClick={() => changeFontSize('decrease')}>A-</FontSizeButton>
+                  <FontSizeButton onClick={() => changeFontSize('increase')}>A+</FontSizeButton>
+              </div>
+            )}
+            <textarea
+              className="w-full h-full bg-transparent border-none resize-none focus:outline-none sticky-note-font text-gray-800"
+              style={{ fontSize: `${currentFontSize}px`, lineHeight: 1.5 }}
+              value={item.content}
+              onChange={(e) => onUpdate(item.id, { content: e.target.value })}
+              placeholder="Write something..."
+            />
+          </div>
+        );
+      };
+
+      // From: components/InputDialog.tsx
+      const InputDialog = ({ isOpen, onClose, onSubmit, title, placeholder, defaultValue = '', submitButtonText = 'Submit' }) => {
+        const [value, setValue] = React.useState(defaultValue);
+        const inputRef = React.useRef(null);
+
+        React.useEffect(() => {
+          if (isOpen) {
+            setValue(defaultValue);
+            setTimeout(() => inputRef.current?.focus(), 100);
+          }
+        }, [isOpen, defaultValue]);
+
+        if (!isOpen) return null;
+
+        const handleSubmit = (e) => {
+          e.preventDefault();
+          if (value.trim()) {
+            onSubmit(value.trim());
+          } else {
+            onClose();
+          }
+        };
+
+        return (
+          <div
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[1000]"
+            onClick={onClose}
+            aria-modal="true"
+            role="dialog"
+          >
+            <div
+              className="bg-white rounded-lg shadow-2xl p-6 w-full max-w-md m-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h2 className="text-xl font-bold mb-4 text-gray-800">{title}</h2>
+              <form onSubmit={handleSubmit}>
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={value}
+                  onChange={(e) => setValue(e.target.value)}
+                  placeholder={placeholder}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  aria-label={title}
+                />
+                <div className="mt-6 flex justify-end space-x-3">
+                  <button type="button" onClick={onClose} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 transition-colors">Cancel</button>
+                  <button type="submit" className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors">{submitButtonText}</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      };
+
+      // From: components/EmojiPicker.tsx
+      const EmojiPicker = ({ onEmojiSelect, onClose }) => {
+        const pickerRef = React.useRef(null);
+        const pickerInstance = React.useRef(null);
+
+        React.useEffect(() => {
+          const handleClickOutside = (event) => {
+              if (pickerRef.current && !pickerRef.current.contains(event.target)) {
+                  onClose();
+              }
+          };
+          document.addEventListener('mousedown', handleClickOutside);
+
+          if (pickerRef.current && !pickerInstance.current) {
+              pickerInstance.current = new window.EmojiMart.Picker({
+                  onEmojiSelect: onEmojiSelect,
+                  previewPosition: 'none',
+              });
+              pickerRef.current.appendChild(pickerInstance.current);
+          }
+          
+          return () => {
+            document.removeEventListener('mousedown', handleClickOutside);
+          };
+        }, [onEmojiSelect, onClose]);
+
+        return (
+          <div 
+              className="fixed inset-0 bg-black/20 backdrop-blur-sm flex items-start justify-center z-[1000] pt-24"
+              onPointerDown={(e) => e.stopPropagation()}
+          >
+            <div 
+              ref={pickerRef}
+              onPointerDown={(e) => e.stopPropagation()} 
+            />
+          </div>
+        );
+      };
+      
+      // From: components/Connector.tsx
+      const Connector = ({ fromItem, toItem }) => {
+        const getCenter = (item) => ({ x: item.x + item.width / 2, y: item.y + item.height / 2 });
+        const start = getCenter(fromItem);
+        const end = getCenter(toItem);
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        const midPointX = start.x + dx / 2;
+        const midPointY = start.y + dy / 2;
+        const sagAmount = Math.min(distance * 0.15, 100);
+        const controlPoint = { x: midPointX, y: midPointY + sagAmount };
+        const pathData = `M ${start.x} ${start.y} Q ${controlPoint.x} ${controlPoint.y} ${end.x} ${end.y}`;
+
+        return (
+          <path d={pathData} stroke="tomato" strokeWidth="3" fill="none" strokeLinecap="round" style={{ filter: 'drop-shadow(0 2px 3px rgba(0,0,0,0.4))', pointerEvents: 'none' }} />
+        );
+      };
+
+      // From: components/BoardItem.tsx
+      const BoardItem = ({ item, onUpdate, onDelete, onSelect, isSelected, scale, onBringForward, onSendBackward, onTransientUpdate }) => {
+        const itemRef = React.useRef(null);
+        const [transientItem, setTransientItem] = React.useState(null);
+        const displayedItem = transientItem || item;
+
+        const ControlHandle = ({ onPointerDown, cursor, position, title, children, className = '' }) => (
+          <div
+            onPointerDown={onPointerDown}
+            className={`absolute ${position} w-6 h-6 bg-blue-500 rounded-full flex items-center justify-center text-white shadow-md transform z-10 ${className}`}
+            style={{ cursor }}
+            title={title}
+          >{children}</div>
+        );
+        
+        const handleInteractionStart = React.useCallback((e, interactionType) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onSelect(item.id, e.shiftKey);
+
+          const startX = e.clientX;
+          const startY = e.clientY;
+          const initialItemState = item; 
+          
+          const handlePointerMove = (moveEvent) => {
+            const dx = moveEvent.clientX - startX;
+            const dy = moveEvent.clientY - startY;
+            const newTransientData = { ...initialItemState };
+
+            if (interactionType === 'drag') {
+              newTransientData.x = initialItemState.x + dx / scale;
+              newTransientData.y = initialItemState.y + dy / scale;
+            } else if (interactionType === 'resize') {
+              newTransientData.width = Math.max(50, initialItemState.width + dx / scale);
+              newTransientData.height = Math.max(50, initialItemState.height + dy / scale);
+            } else if (interactionType === 'rotate' && itemRef.current) {
+              const rect = itemRef.current.getBoundingClientRect();
+              const centerX = rect.left + rect.width / 2;
+              const centerY = rect.top + rect.height / 2;
+              const startAngle = Math.atan2(startY - centerY, startX - centerX) * (180 / Math.PI);
+              const moveAngle = Math.atan2(moveEvent.clientY - centerY, moveEvent.clientX - centerX) * (180 / Math.PI);
+              newTransientData.rotation = initialItemState.rotation + (moveAngle - startAngle);
+            }
+            setTransientItem(newTransientData);
+            onTransientUpdate(newTransientData);
+          };
+          
+          const handlePointerUp = () => {
+            document.removeEventListener('pointermove', handlePointerMove);
+            document.removeEventListener('pointerup', handlePointerUp);
+            
+            onTransientUpdate(null);
+
+            setTransientItem(currentTransientItem => {
+              if (currentTransientItem) {
+                const hasChanged = JSON.stringify(currentTransientItem) !== JSON.stringify(initialItemState);
+                if (hasChanged) {
+                  onUpdate(item.id, { 
+                    x: currentTransientItem.x,
+                    y: currentTransientItem.y,
+                    width: currentTransientItem.width,
+                    height: currentTransientItem.height,
+                    rotation: currentTransientItem.rotation
+                  });
+                }
+              }
+              return null; 
+            });
+          };
+
+          document.addEventListener('pointermove', handlePointerMove);
+          document.addEventListener('pointerup', handlePointerUp);
+        }, [item, onUpdate, onSelect, scale, onTransientUpdate]);
+
+        const renderContent = () => {
+          const currentItem = transientItem || item;
+          switch (currentItem.type) {
+            case ItemType.Note: return <StickyNote item={currentItem} onUpdate={onUpdate} isSelected={isSelected} />;
+            case ItemType.Image: return <ImageItem item={currentItem} />;
+            case ItemType.Video: return <VideoItem item={currentItem} isSelected={isSelected} />;
+            case ItemType.Emoji: return <EmojiItem item={currentItem} />;
+            default: return null;
+          }
+        };
+
+        const isPngImage = displayedItem.type === ItemType.Image && displayedItem.content.startsWith('data:image/png;');
+        const showContainerShadow = displayedItem.type !== ItemType.Emoji && !isPngImage;
+
+        return (
+          <div
+            ref={itemRef}
+            data-item-id={item.id}
+            className={`absolute transition-shadow duration-200 board-item-container ${isSelected ? 'board-item-selected' : ''}`}
+            style={{
+              left: displayedItem.x,
+              top: displayedItem.y,
+              width: displayedItem.width,
+              height: displayedItem.height,
+              transform: `rotate(${displayedItem.rotation}deg)`,
+              zIndex: displayedItem.zIndex,
+            }}
+            onPointerDown={(e) => {
+              if (item.type === ItemType.Video) {
+                if (!isSelected) onSelect(item.id, e.shiftKey);
+                return;
+              }
+              if (e.target.closest('textarea, button, a, iframe, .absolute.w-6.h-6')) return;
+              handleInteractionStart(e, 'drag');
+            }}
+          >
+            <div className={`w-full h-full cursor-grab active:cursor-grabbing rounded-lg overflow-hidden ${showContainerShadow ? 'strong-shadow' : ''}`}>
+              {renderContent()}
+            </div>
+            {displayedItem.type === ItemType.Note && <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-20 w-40 h-40 z-10 rotate-[-15deg]" style={{ backgroundImage: `url(${PIN_URL})`, backgroundSize: 'contain', backgroundRepeat: 'no-repeat' }} />}
+            {isSelected && (
+              <>
+                <ControlHandle onPointerDown={(e) => { e.stopPropagation(); onDelete(item.id); }} cursor="pointer" position="top-0 right-0 translate-x-1/2 -translate-y-1/2" title="Delete">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                </ControlHandle>
+                <ControlHandle onPointerDown={(e) => handleInteractionStart(e, 'resize')} cursor="se-resize" position="bottom-0 right-0 translate-x-1/2 translate-y-1/2" title="Resize">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 transform rotate-45" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" /></svg>
+                </ControlHandle>
+                <ControlHandle onPointerDown={(e) => handleInteractionStart(e, 'rotate')} cursor="crosshair" position="top-0 left-0 -translate-x-1/2 -translate-y-1/2" title="Rotate">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h5M20 20v-5h-5M4 20h5v-5M20 4h-5v5" /></svg>
+                </ControlHandle>
+                <ControlHandle onPointerDown={(e) => handleInteractionStart(e, 'drag')} cursor="move" position="bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2" title="Move">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3a1 1 0 011 1v2.586l3.293-3.293a1 1 0 111.414 1.414L12.414 8H15a1 1 0 110 2h-2.586l3.293 3.293a1 1 0 11-1.414 1.414L11 12.414V15a1 1 0 11-2 0v-2.586l-3.293 3.293a1 1 0 11-1.414-1.414L7.586 12H5a1 1 0 110-2h2.586L4.293 6.707a1 1 0 011.414-1.414L9 8.586V6a1 1 0 011-1z" /></svg>
+                </ControlHandle>
+                <ControlHandle onPointerDown={onBringForward} cursor="pointer" position="top-1/4 left-0 -translate-x-1/2 -translate-y-1/2" title="Bring Forward">🔼</ControlHandle>
+                <ControlHandle onPointerDown={onSendBackward} cursor="pointer" position="top-3/4 left-0 -translate-x-1/2 -translate-y-1/2" title="Send Backward">🔽</ControlHandle>
+              </>
+            )}
+          </div>
+        );
+      };
+
+      // From: components/Toolbar.tsx
+      const Toolbar = ({ onAddItem, zoomLevel, onZoomChange, onUndo, onRedo, canUndo, canRedo, onThemeChange, onBackup, onLoad, boardName }) => {
+        const ToolbarButton = ({ onClick, title, disabled = false, children }) => (
+          <button
+            onClick={onClick}
+            title={title}
+            disabled={disabled}
+            className="w-12 h-12 flex items-center justify-center rounded-full bg-white/20 hover:bg-white/40 text-2xl transition-all duration-200 transform hover:scale-110 focus:outline-none focus:ring-2 focus:ring-white disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white/20 disabled:transform-none"
+          >{children}</button>
+        );
+
+        return (
+          <div className="absolute top-5 left-1/2 -translate-x-1/2 z-50 bg-black/30 backdrop-blur-md p-2 rounded-full shadow-lg flex items-center space-x-2 text-white">
+            <ToolbarButton onClick={() => onAddItem(ItemType.Note)} title="Add Sticky Note">📝</ToolbarButton>
+            <ToolbarButton onClick={() => onAddItem(ItemType.Image)} title="Upload Image">🖼️</ToolbarButton>
+            <ToolbarButton onClick={() => onAddItem(ItemType.Video)} title="Add YouTube Video">▶️</ToolbarButton>
+            <ToolbarButton onClick={() => onAddItem(ItemType.Emoji)} title="Add Emoji">😀</ToolbarButton>
+            <div className="w-px h-8 bg-white/30 mx-2"></div>
+            <ToolbarButton onClick={onUndo} title="Undo (Ctrl+Z)" disabled={!canUndo}>↩️</ToolbarButton>
+            <ToolbarButton onClick={onRedo} title="Redo (Ctrl+Y)" disabled={!canRedo}>↪️</ToolbarButton>
+            <div className="w-px h-8 bg-white/30 mx-2"></div>
+            <ToolbarButton onClick={onThemeChange} title="Change Theme">🎨</ToolbarButton>
+            <ToolbarButton onClick={onBackup} title="Backup Board">💾</ToolbarButton>
+            <ToolbarButton onClick={onLoad} title="Load Board">📂</ToolbarButton>
+            <div className="w-px h-8 bg-white/30 mx-2"></div>
+            <span className="px-3 py-2 text-sm font-semibold whitespace-nowrap">{boardName}</span>
+            <div className="w-px h-8 bg-white/30 mx-2"></div>
+            <div className="flex items-center space-x-2 px-2">
+              <button onClick={() => onZoomChange(Math.max(ZOOM_MIN, zoomLevel - 0.2))} className="text-2xl hover:text-blue-300 transition-colors">-</button>
+              <span className="text-sm font-medium w-16 text-center tabular-nums">{(zoomLevel * 100).toFixed(0)}%</span>
+              <button onClick={() => onZoomChange(Math.min(ZOOM_MAX, zoomLevel + 0.2))} className="text-2xl hover:text-blue-300 transition-colors">+</button>
+            </div>
+          </div>
+        );
+      };
+
+      // From: App.tsx
+      const App = ({ board }) => {
+        const { state, setState, undo, redo, canUndo, canRedo } = usePersistentHistory(`corkboard-${board.id}`, { items: [], connections: [] });
+        const { items, connections } = state;
+        const [selectedItemIds, setSelectedItemIds] = React.useState([]);
+        const [zIndexCounter, setZIndexCounter] = React.useState(() => {
+          if (items.length === 0) return INITIAL_Z_INDEX;
+          return Math.max(...items.map(item => item.zIndex), INITIAL_Z_INDEX);
+        });
+        const [theme, setTheme] = React.useState('white');
+        const [isEmojiPickerOpen, setIsEmojiPickerOpen] = React.useState(false);
+        const [transientUpdate, setTransientUpdate] = React.useState(null);
+        
+        const [dialogState, setDialogState] = React.useState({
+          isOpen: false, type: null, title: '', placeholder: '', defaultValue: '',
+        });
+
+        const boardViewportRef = React.useRef(null);
+        const { pan, zoom, setZoom } = useBoardInteraction(boardViewportRef);
+        
+        React.useEffect(() => {
+          const handleKeyDown = (e) => {
+            const target = e.target;
+            if (e.key === 'Escape') { e.preventDefault(); setSelectedItemIds([]); return; }
+            if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+            if (e.ctrlKey || e.metaKey) {
+              if (e.key === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); } 
+              else if (e.key === 'y') { e.preventDefault(); redo(); }
+            }
+            if ((e.key === 'Delete' || e.key === 'Backspace') && selectedItemIds.length > 0) {
+              e.preventDefault();
+              setState(prev => ({
+                  items: prev.items.filter(item => !selectedItemIds.includes(item.id)),
+                  connections: prev.connections.filter(conn => !selectedItemIds.includes(conn.fromId) && !selectedItemIds.includes(conn.toId))
+              }));
+              setSelectedItemIds([]);
+            }
+          };
+          window.addEventListener('keydown', handleKeyDown);
+          return () => window.removeEventListener('keydown', handleKeyDown);
+        }, [undo, redo, setState, selectedItemIds]);
+
+        const getCenterPosition = () => {
+          if (!boardViewportRef.current) return { x: 2500, y: 2500 };
+          const rect = boardViewportRef.current.getBoundingClientRect();
+          return { x: (rect.width / 2 - pan.x) / zoom, y: (rect.height / 2 - pan.y) / zoom };
+        };
+
+        const addNewItem = (type, content, extra = {}) => {
+          const center = getCenterPosition();
+          const newZ = zIndexCounter + 1;
+          const newItem = {
+            id: `item-${Date.now()}`, type, x: center.x - 125, y: center.y - 125, width: 250, height: 250,
+            rotation: 0, zIndex: newZ, content,
+            color: type === ItemType.Note ? NOTE_COLORS[Math.floor(Math.random() * NOTE_COLORS.length)] : undefined,
+            fontSize: type === ItemType.Note ? FONT_SIZE_DEFAULT : undefined,
+            ...extra,
+          };
+          setState(prev => ({...prev, items: [...prev.items, newItem]}));
+          setZIndexCounter(newZ);
+          setSelectedItemIds([newItem.id]);
+        };
+        
+        const handleAddItem = (type) => {
+          if (type === ItemType.Note) {
+            addNewItem(ItemType.Note, 'Write something...');
+          } else if (type === ItemType.Image) {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = 'image/*';
+            input.onchange = (e) => {
+              const file = e.target.files?.[0];
+              if (file) {
+                const reader = new FileReader();
+                reader.onload = (readerEvent) => {
+                  if (readerEvent.target?.result) {
+                    addNewItem(ItemType.Image, readerEvent.target.result, { width: 400, height: 300 });
+                  }
+                };
+                reader.readAsDataURL(file);
+              }
+            };
+            input.click();
+          } else if (type === ItemType.Video) {
+            setDialogState({ isOpen: true, type: ItemType.Video, title: 'Add YouTube Video', placeholder: 'https://www.youtube.com/watch?v=...', defaultValue: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' });
+          } else if (type === ItemType.Emoji) {
+            setIsEmojiPickerOpen(true);
+          }
+        };
+
+        const closeDialog = () => setDialogState(prev => ({ ...prev, isOpen: false }));
+
+        const handleDialogSubmit = (value) => {
+          if (dialogState.type === ItemType.Video) {
+            addNewItem(ItemType.Video, value, { width: 480, height: 270 });
+          }
+          closeDialog();
+        };
+        
+        const handleEmojiSelect = (emoji) => {
+          addNewItem(ItemType.Emoji, emoji.native, { width: 150, height: 150 });
+          setIsEmojiPickerOpen(false);
+        };
+
+        const handleUpdateItem = React.useCallback((id, updates) => {
+          setState(prev => ({ ...prev, items: prev.items.map(item => (item.id === id ? { ...item, ...updates } : item)) }));
+        }, [setState]);
+
+        const handleDeleteItem = React.useCallback((id) => {
+          setState(prev => ({
+            items: prev.items.filter(item => item.id !== id),
+            connections: prev.connections.filter(conn => conn.fromId !== id && conn.toId !== id)
+          }));
+          setSelectedItemIds(prev => prev.filter(selectedId => selectedId !== id));
+        }, [setState]);
+
+        const handleSelectItem = React.useCallback((id, isShiftPressed) => {
+          setSelectedItemIds(prevSelectedIds => {
+              if (isShiftPressed) {
+                  return prevSelectedIds.includes(id) ? prevSelectedIds.filter(selectedId => selectedId !== id) : [...prevSelectedIds, id];
+              }
+              if (prevSelectedIds.length === 1 && prevSelectedIds[0] === id) return prevSelectedIds;
+              return [id];
+          });
+          const itemToSelect = items.find(item => item.id === id);
+          if (itemToSelect) {
+              const maxZ = Math.max(...items.map(i => i.zIndex), 0);
+              if (itemToSelect.zIndex <= maxZ) {
+                  const newZ = zIndexCounter + 1;
+                  setZIndexCounter(newZ);
+                  handleUpdateItem(id, { zIndex: newZ });
+              }
+          }
+        }, [items, handleUpdateItem, zIndexCounter]);
+
+        const handleBoardClick = (e) => {
+          if (!e.target.closest('.board-item-container') && !e.target.closest('.absolute.w-6.h-6')) {
+              setSelectedItemIds([]);
+          }
+        };
+
+        const THEMES = ['white', 'dark', 'orange'];
+        const handleThemeChange = () => setTheme(currentTheme => THEMES[(THEMES.indexOf(currentTheme) + 1) % THEMES.length]);
+
+        const handleBackup = () => {
+          const dataStr = JSON.stringify({ name: board.name, items, connections }, null, 2);
+          const blob = new Blob([dataStr], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.download = `${board.name.replace(/\s+/g, '_')}_backup.json`;
+          link.href = url;
+          link.click();
+          URL.revokeObjectURL(url);
+        };
+
+        const handleLoadBackup = () => {
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.accept = '.json,application/json';
+          input.onchange = e => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = readerEvent => {
+              try {
+                const data = JSON.parse(readerEvent.target?.result);
+                if (data && Array.isArray(data.items)) {
+                  setState({ items: data.items, connections: data.connections || [] });
+                  const maxZ = data.items.length > 0 ? Math.max(...data.items.map(i => i.zIndex)) : INITIAL_Z_INDEX;
+                  setZIndexCounter(maxZ);
+                } else {
+                  alert('Invalid backup file format.');
+                }
+              } catch (error) {
+                console.error('Failed to load backup:', error);
+                alert('Failed to parse backup file. Make sure it is a valid JSON file.');
+              }
+            };
+            reader.readAsText(file);
+          };
+          input.click();
+        };
+
+        const handleZIndex = (itemId, direction) => {
+          const sortedItems = [...items].sort((a, b) => a.zIndex - b.zIndex || a.id.localeCompare(b.id));
+          const currentIndex = sortedItems.findIndex(item => item.id === itemId);
+
+          if (direction === 'forward' && currentIndex < sortedItems.length - 1) {
+            const otherItem = sortedItems[currentIndex + 1];
+            handleUpdateItem(itemId, { zIndex: otherItem.zIndex });
+            handleUpdateItem(otherItem.id, { zIndex: sortedItems[currentIndex].zIndex });
+          } else if (direction === 'backward' && currentIndex > 0) {
+            const otherItem = sortedItems[currentIndex - 1];
+            handleUpdateItem(itemId, { zIndex: otherItem.zIndex });
+            handleUpdateItem(otherItem.id, { zIndex: sortedItems[currentIndex].zIndex });
+          }
+        };
+        
+        const handleConnectItems = () => {
+          if (selectedItemIds.length < 2) return;
+          const newConnections = [];
+          for (let i = 0; i < selectedItemIds.length - 1; i++) {
+              const fromId = selectedItemIds[i];
+              const toId = selectedItemIds[i + 1];
+              const connectionExists = connections.some(c => (c.fromId === fromId && c.toId === toId) || (c.fromId === toId && c.toId === fromId));
+              if (!connectionExists) {
+                  newConnections.push({ id: `conn-${fromId}-${toId}-${Date.now()}`, fromId, toId });
+              }
+          }
+          if (newConnections.length > 0) {
+              setState(prev => ({ ...prev, connections: [...prev.connections, ...newConnections] }));
+          }
+        };
+        
+        const handleTransientUpdate = React.useCallback((update) => {
+          setTransientUpdate(update);
+        }, []);
+
+        const displayedItems = React.useMemo(() => {
+          if (!transientUpdate) return items;
+          return items.map(item => item.id === transientUpdate.id ? transientUpdate : item);
+        }, [items, transientUpdate]);
+
+        return (
+          <div className={`w-screen h-screen flex flex-col overflow-hidden theme-${theme}`}>
+            <Toolbar onAddItem={handleAddItem} zoomLevel={zoom} onZoomChange={setZoom} onUndo={undo} onRedo={redo} canUndo={canUndo} canRedo={canRedo} onThemeChange={handleThemeChange} onBackup={handleBackup} onLoad={handleLoadBackup} boardName={board.name} />
+            {selectedItemIds.length >= 2 && (
+              <button onClick={handleConnectItems} className="absolute top-24 left-1/2 -translate-x-1/2 z-50 px-6 py-3 bg-blue-600 text-white font-bold rounded-full shadow-lg hover:bg-blue-700 transition-all transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-blue-400" aria-label={`Connect ${selectedItemIds.length} items`}>
+                Connect ({selectedItemIds.length})
+              </button>
+            )}
+            <div ref={boardViewportRef} className="flex-grow w-full h-full overflow-hidden cursor-grab active:cursor-grabbing" onPointerDown={handleBoardClick}>
+              <div className={`absolute transform-gpu theme-${theme}`} style={{ width: 5000, height: 5000, transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: '0 0' }}>
+                <svg className="absolute top-0 left-0 w-full h-full pointer-events-none" style={{ overflow: 'visible' }}>
+                  <g>
+                    {connections.map(conn => {
+                      const fromItem = displayedItems.find(i => i.id === conn.fromId);
+                      const toItem = displayedItems.find(i => i.id === conn.toId);
+                      return fromItem && toItem ? <Connector key={conn.id} fromItem={fromItem} toItem={toItem} /> : null;
+                    })}
+                  </g>
+                </svg>
+                {displayedItems.map(item => (
+                  <BoardItem key={item.id} item={item} onUpdate={handleUpdateItem} onDelete={handleDeleteItem} onSelect={handleSelectItem} isSelected={selectedItemIds.includes(item.id)} scale={zoom} onBringForward={() => handleZIndex(item.id, 'forward')} onSendBackward={() => handleZIndex(item.id, 'backward')} onTransientUpdate={handleTransientUpdate} />
+                ))}
+              </div>
+            </div>
+            <InputDialog isOpen={dialogState.isOpen} onClose={closeDialog} onSubmit={handleDialogSubmit} title={dialogState.title} placeholder={dialogState.placeholder} defaultValue={dialogState.defaultValue} submitButtonText="Add" />
+            {isEmojiPickerOpen && <EmojiPicker onEmojiSelect={handleEmojiSelect} onClose={() => setIsEmojiPickerOpen(false)} />}
+          </div>
+        );
+      };
+
+      // From: index.tsx
+      const Main = () => {
+        const defaultBoard = { id: 'default-board', name: 'My Corkboard' };
+        return <App board={defaultBoard} />;
+      };
+
+      const rootElement = document.getElementById('root');
+      if (!rootElement) {
+        throw new Error("Could not find root element to mount to");
+      }
+
+      const root = ReactDOM.createRoot(rootElement);
+      root.render(
+        <React.StrictMode>
+          <Main />
+        </React.StrictMode>
+      );
+    </script>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>
