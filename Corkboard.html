@@ -1,0 +1,1924 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Infinite Corkboard — Enhanced</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Patrick+Hand&family=Inter:wght@400;500;700&display=swap');
+body {
+font-family: 'Inter', sans-serif;
+overscroll-behavior: none;
+margin: 0;
+padding: 0;
+overflow: hidden;
+}
+.sticky-note-font {font-family: 'Arial', cursive;}
+.board-item-selected {box-shadow: 0 0 0 3px #3b82f6, 0 25px 50px -12px rgba(0,0,0,0.2);}
+/* Theme background colors */
+.theme-white { background-color: #f7fafc; }
+.theme-dark { background-color: #1a202c; }
+.theme-orange { background-color: #cfbd87; }
+
+/* Animations */
+@keyframes itemAppear {
+0% { transform: scale(0.8); opacity: 0; }
+100% { transform: scale(1); opacity: 1; }
+}
+.item-appear {
+animation: itemAppear 0.3s ease-out forwards;
+}
+
+/* Drawing canvas styles */
+.drawing-canvas {
+position: absolute;
+top: 0;
+left: 0;
+pointer-events: none;
+z-index: 5;
+}
+.drawing-canvas.active {
+pointer-events: auto;
+}
+
+/* Selection box styles */
+.selection-box {
+position: absolute;
+border: 2px dashed #3b82f6;
+background-color: rgba(59, 130, 246, 0.1);
+pointer-events: none;
+z-index: 100;
+}
+
+/* Link preview card */
+.link-preview {
+max-width: 300px;
+border-radius: 8px;
+overflow: hidden;
+box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+background-color: white;
+display: flex;
+flex-direction: column;
+}
+.link-preview-image {
+width: 100%;
+height: 120px;
+object-fit: cover;
+background-color: #f3f4f6;
+}
+.link-preview-content {
+padding: 12px;
+}
+.link-preview-title {
+font-weight: bold;
+margin-bottom: 4px;
+font-size: 14px;
+color: #1f2937;
+}
+.link-preview-description {
+font-size: 12px;
+color: #4b5563;
+display: -webkit-box;
+-webkit-line-clamp: 2;
+line-clamp: 2;
+-webkit-box-orient: vertical;
+overflow: hidden;
+}
+.link-preview-url {
+font-size: 10px;
+color: #6b7280;
+margin-top: 4px;
+overflow: hidden;
+text-overflow: ellipsis;
+white-space: nowrap;
+}
+
+/* Welcome guide styles */
+.welcome-overlay {
+position: fixed;
+top: 0;
+left: 0;
+right: 0;
+bottom: 0;
+background-color: rgba(0, 0, 0, 0.7);
+display: flex;
+align-items: center;
+justify-content: center;
+z-index: 2000;
+padding: 20px;
+}
+.welcome-content {
+background-color: white;
+border-radius: 12px;
+max-width: 600px;
+width: 100%;
+padding: 30px;
+box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+}
+.welcome-title {
+font-size: 24px;
+font-weight: bold;
+margin-bottom: 16px;
+color: #1f2937;
+}
+.welcome-text {
+margin-bottom: 20px;
+color: #4b5563;
+line-height: 1.6;
+}
+.welcome-features {
+margin-bottom: 24px;
+}
+.welcome-feature {
+display: flex;
+align-items: flex-start;
+margin-bottom: 12px;
+}
+.welcome-feature-icon {
+margin-right: 10px;
+font-size: 18px;
+}
+.welcome-feature-text {
+color: #4b5563;
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react,env">
+// Constants
+const ItemType = {
+Note: 'NOTE',
+Image: 'IMAGE',
+Video: 'VIDEO',
+Emoji: 'EMOJI',
+Link: 'LINK'
+};
+const PIN_URL = 'https://i.ibb.co/cPJm1cG/image-from-rawpixel-id-8314917-png.png';
+const ZOOM_MIN = 0.005;
+const ZOOM_MAX = 10;
+const ZOOM_SENSITIVITY = 0.0002;
+const NOTE_COLORS = [
+'bg-orange-200', 'bg-teal-200', 'bg-indigo-200', 'bg-yellow-200',
+'bg-pink-200', 'bg-purple-200', 'bg-green-200', 'bg-blue-200',
+'bg-blue-300', 'bg-red-200', 'bg-cyan-200', 'bg-lime-200',
+'bg-emerald-200', 'bg-gray-200'
+];
+const INITIAL_Z_INDEX = 10;
+const FONT_SIZE_MIN = 12;
+const FONT_SIZE_DEFAULT = 32;
+const FONT_CHOICES = [
+{ label: 'Arial', value: 'Arial, Helvetica, sans-serif' },
+{ label: 'Inter', value: "'Inter', sans-serif" },
+{ label: 'Patrick Hand', value: "'Patrick Hand', cursive" },
+{ label: 'Times New Roman', value: "'Times New Roman', Times, serif" },
+{ label: 'Georgia', value: 'Georgia, serif' },
+{ label: 'Courier New', value: "'Courier New', Courier, monospace" },
+{ label: 'Comic Sans MS', value: "'Comic Sans MS', 'Comic Sans', cursive" },
+];
+// Drawing tools
+const DrawingTools = {
+PEN: 'pen',
+ERASER: 'eraser'
+};
+// Drawing colors
+const DRAWING_COLORS = [
+'#000000', '#ef4444', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'
+];
+// Custom hook for persistent history
+const usePersistentHistory = (storageKey, initialPresent) => {
+const getStorageValue = (key, def) => {
+const saved = localStorage.getItem(key);
+if (saved) {
+try {
+return JSON.parse(saved);
+} catch(_) {
+return def;
+}
+}
+return def;
+};
+
+const [timeline, setTimeline] = React.useState(() => ({
+past: [],
+present: getStorageValue(storageKey, initialPresent),
+future: [],
+}));
+
+React.useEffect(() => {
+localStorage.setItem(storageKey, JSON.stringify(timeline.present));
+}, [storageKey, timeline.present]);
+
+const canUndo = timeline.past.length > 0;
+const canRedo = timeline.future.length > 0;
+
+const setState = React.useCallback((action) => {
+setTimeline(current => {
+const newPresent = typeof action === 'function' ? action(current.present) : action;
+if (JSON.stringify(newPresent) === JSON.stringify(current.present)) return current;
+return {
+past: [...current.past, current.present],
+present: newPresent,
+future: []
+};
+});
+}, []);
+
+const undo = React.useCallback(() => {
+setTimeline(current => {
+if (!canUndo) return current;
+const previous = current.past[current.past.length - 1];
+const newPast = current.past.slice(0, -1);
+return {
+past: newPast,
+present: previous,
+future: [current.present, ...current.future]
+};
+});
+}, [canUndo]);
+
+const redo = React.useCallback(() => {
+setTimeline(current => {
+if (!canRedo) return current;
+const next = current.future[0];
+const newFuture = current.future.slice(1);
+return {
+past: [...current.past, current.present],
+present: next,
+future: newFuture
+};
+});
+}, [canRedo]);
+
+return {
+state: timeline.present,
+setState,
+undo,
+redo,
+canUndo,
+canRedo
+};
+};
+// Hook for board interaction (pan and zoom)
+const useBoardInteraction = (ref) => {
+const [pan, setPan] = React.useState({ x: 0, y: 0 });
+const [zoom, setZoom] = React.useState(1);
+const isPanning = React.useRef(false);
+const last = React.useRef({ x: 0, y: 0 });
+
+React.useEffect(() => {
+const el = ref.current;
+if (!el) return;
+
+const down = (e) => {
+if (e.target.isEqualNode(el) || e.target.parentElement?.isEqualNode(el)) {
+isPanning.current = true;
+last.current = { x: e.clientX, y: e.clientY };
+el.style.cursor = 'grabbing';
+}
+};
+
+const up = () => {
+isPanning.current = false;
+el.style.cursor = 'grab';
+};
+
+const move = (e) => {
+if (!isPanning.current) return;
+const dx = e.clientX - last.current.x,
+dy = e.clientY - last.current.y;
+setPan(p => ({ x: p.x + dx, y: p.y + dy }));
+last.current = { x: e.clientX, y: e.clientY };
+};
+
+const wheel = (e) => {
+e.preventDefault();
+const rect = el.getBoundingClientRect();
+const mx = e.clientX - rect.left,
+my = e.clientY - rect.top;
+const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom - e.deltaY * ZOOM_SENSITIVITY));
+const mouseTo = {
+x: (mx - pan.x) / zoom,
+y: (my - pan.y) / zoom
+};
+setPan({
+x: mx - mouseTo.x * newZoom,
+y: my - mouseTo.y * newZoom
+});
+setZoom(newZoom);
+};
+
+el.addEventListener('pointerdown', down);
+window.addEventListener('pointerup', up);
+window.addEventListener('pointermove', move);
+el.addEventListener('wheel', wheel, { passive: false });
+
+return () => {
+el.removeEventListener('pointerdown', down);
+window.removeEventListener('pointerup', up);
+window.removeEventListener('pointermove', move);
+el.removeEventListener('wheel', wheel);
+};
+}, [pan.x, pan.y, zoom]);
+
+return { pan, zoom, setZoom };
+};
+// Item Components
+const ImageItem = ({ item }) => {
+const isPng = item.content.startsWith('data:image/png;');
+return (
+<div className="w-full h-full flex items-center justify-center bg-transparent">
+<img
+src={item.content}
+alt="User content"
+className="w-full h-full object-contain"
+style={isPng ? { filter: 'drop-shadow(0 8px 10px rgba(0,0,0,0.25))' } : {}}
+draggable={false}
+onError={(e) => {
+e.target.src = 'https://i.imgur.com/80idhS4.png';
+e.target.alt = 'Error loading image';
+}}
+/>
+</div>
+);
+};
+const VideoItem = ({ item, isDragging, iframeEnabled }) => {
+const getYouTubeEmbedUrl = (url) => {
+const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|shorts\/|watch\?v=|&v=)([^#&?]*).*/;
+const match = url.match(regExp);
+return match && match[2].length === 11 ? `https://www.youtube.com/embed/${match[2]}` : null;
+};
+
+const embedUrl = getYouTubeEmbedUrl(item.content);
+
+return (
+<div className="w-full h-full bg-black flex items-center justify-center text-white relative">
+{embedUrl ? (
+<iframe
+width="100%"
+height="100%"
+src={embedUrl}
+title="YouTube"
+frameBorder="0"
+allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+allowFullScreen
+style={{ pointerEvents: (iframeEnabled && !isDragging) ? 'auto' : 'none' }}
+/>
+) : (
+<p className="p-4 text-center text-red-400">Invalid YouTube URL</p>
+)}
+
+{/* Drag bar to move video even when iframe exists */}
+<div
+className="absolute top-0 left-0 right-0 h-8 bg-white/10 backdrop-blur-sm text-xs flex items-center justify-center select-none"
+style={{ cursor: 'move' }}
+data-drag-handle="true"
+>
+drag here
+</div>
+</div>
+);
+};
+const EmojiItem = ({ item }) => (
+<div className="w-full h-full flex items-center justify-center bg-transparent">
+<span
+style={{
+fontSize: Math.min(item.width, item.height) * 0.8,
+textShadow: '0 5px 15px rgba(0,0,0,0.25)'
+}}
+className="select-none"
+>
+{item.content}
+</span>
+</div>
+);
+const LinkItem = ({ item }) => {
+const [previewData, setPreviewData] = React.useState(item.previewData || null);
+const [loading, setLoading] = React.useState(!item.previewData);
+
+React.useEffect(() => {
+// If we already have preview data, no need to fetch again
+if (item.previewData) {
+setPreviewData(item.previewData);
+setLoading(false);
+return;
+}
+
+// Function to fetch link preview data
+const fetchPreviewData = async () => {
+try {
+setLoading(true);
+
+// Since we can't make direct CORS requests to arbitrary URLs,
+// we'll create a more realistic mock preview
+const url = item.content;
+const urlObj = new URL(url);
+const domain = urlObj.hostname.replace('www.', '');
+
+// Create a more realistic preview
+const preview = {
+title: domain.charAt(0).toUpperCase() + domain.slice(1),
+description: `This is a link to ${domain}. Click to visit this website.`,
+image: `https://picsum.photos/seed/${domain}/300/200.jpg`,
+url: url
+};
+
+setPreviewData(preview);
+} catch (error) {
+console.error('Error fetching link preview:', error);
+// Fallback preview
+setPreviewData({
+title: 'Website Link',
+description: 'Click to visit this website',
+image: 'https://picsum.photos/seed/website/300/200.jpg',
+url: item.content
+});
+} finally {
+setLoading(false);
+}
+};
+
+fetchPreviewData();
+}, [item.content, item.previewData]);
+
+if (loading) {
+return (
+<div className="w-full h-full flex items-center justify-center bg-gray-100">
+<p className="text-gray-500">Loading preview...</p>
+</div>
+);
+}
+
+if (!previewData) {
+return (
+<div className="w-full h-full flex items-center justify-center bg-gray-100">
+<p className="text-gray-500">Preview not available</p>
+</div>
+);
+}
+
+return (
+<div className="link-preview w-full h-full flex flex-col">
+<img
+src={previewData.image}
+alt={previewData.title}
+className="link-preview-image"
+onError={(e) => {
+e.target.style.display = 'none';
+}}
+/>
+<div className="link-preview-content flex-grow">
+<div className="link-preview-title">{previewData.title}</div>
+<div className="link-preview-description">{previewData.description}</div>
+<div className="link-preview-url">{previewData.url}</div>
+</div>
+</div>
+);
+};
+const StickyNote = ({ item, onUpdate, isSelected, currentFontFamily, isEditing, onSetEditing }) => {
+const fs = item.fontSize || FONT_SIZE_DEFAULT;
+const fontFamily = item.fontFamily || currentFontFamily || `'Arial', cursive`;
+
+const changeFontSize = (dir) => {
+const newSize = dir === 'increase' ? fs + 10 : Math.max(FONT_SIZE_MIN, fs - 10);
+onUpdate(item.id, { fontSize: newSize });
+};
+
+const FontSizeButton = ({ onClick, children }) => (
+<button
+onClick={onClick}
+className="w-8 h-8 flex items-center justify-center bg-black/10 hover:bg-black/20 rounded-full text-sm font-bold text-gray-700"
+onPointerDown={e => e.stopPropagation()}
+>
+{children}
+</button>
+);
+
+return (
+<div className={`w-full h-full p-6 pt-20 relative ${item.color || 'bg-yellow-200'}`}>
+{isSelected && (
+<div className="absolute top-4 right-4 flex space-x-2 z-20">
+<FontSizeButton onClick={() => changeFontSize('decrease')}>A-</FontSizeButton>
+<FontSizeButton onClick={() => changeFontSize('increase')}>A+</FontSizeButton>
+</div>
+)}
+
+{isEditing ? (
+<textarea
+className="w-full h-full bg-transparent border-none resize-none focus:outline-none text-gray-800"
+style={{ fontSize: `${fs}px`, lineHeight: 1.5, fontFamily }}
+value={item.content}
+onChange={(e) => onUpdate(item.id, { content: e.target.value })}
+placeholder="Write something..."
+autoFocus
+onBlur={() => onSetEditing(false)}
+/>
+) : (
+<div
+className="w-full h-full bg-transparent border-none resize-none focus:outline-none text-gray-800"
+style={{ fontSize: `${fs}px`, lineHeight: 1.5, fontFamily }}
+onDoubleClick={() => onSetEditing(true)}
+>
+{item.content || <span className="text-gray-400">Double-click to edit</span>}
+</div>
+)}
+</div>
+);
+};
+// Dialog Components
+const InputDialog = ({ isOpen, onClose, onSubmit, title, placeholder, defaultValue = '', submitButtonText = 'Submit' }) => {
+const [value, setValue] = React.useState(defaultValue);
+const inputRef = React.useRef(null);
+
+React.useEffect(() => {
+if (isOpen) {
+setValue(defaultValue);
+setTimeout(() => inputRef.current?.focus(), 100);
+}
+}, [isOpen, defaultValue]);
+
+if (!isOpen) return null;
+
+const handleSubmit = (e) => {
+e.preventDefault();
+if (value.trim()) onSubmit(value.trim());
+else onClose();
+};
+
+return (
+<div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[1000]" onClick={onClose} role="dialog">
+<div className="bg-white rounded-lg shadow-2xl p-6 w-full max-w-md m-4" onClick={(e) => e.stopPropagation()}>
+<h2 className="text-xl font-bold mb-4 text-gray-800">{title}</h2>
+<form onSubmit={handleSubmit}>
+<input
+ref={inputRef}
+type="text"
+value={value}
+onChange={(e) => setValue(e.target.value)}
+placeholder={placeholder}
+className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+/>
+<div className="mt-6 flex justify-end space-x-3">
+<button type="button" onClick={onClose} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300">
+Cancel
+</button>
+<button type="submit" className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600">
+{submitButtonText}
+</button>
+</div>
+</form>
+</div>
+</div>
+);
+};
+const ConfirmationDialog = ({ isOpen, onClose, onConfirm, title, message }) => {
+if (!isOpen) return null;
+
+return (
+<div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[1000]" onClick={onClose} role="dialog">
+<div className="bg-white rounded-lg shadow-2xl p-6 w-full max-w-md m-4" onClick={(e) => e.stopPropagation()}>
+<h2 className="text-xl font-bold mb-4 text-gray-800">{title}</h2>
+<p className="mb-6 text-gray-600">{message}</p>
+<div className="flex justify-end space-x-3">
+<button onClick={onClose} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300">
+Cancel
+</button>
+<button onClick={onConfirm} className="px-4 py-2 bg-red-500 text-white rounded-md hover:bg-red-600">
+Confirm
+</button>
+</div>
+</div>
+</div>
+);
+};
+const EmojiPicker = ({ onEmojiSelect, onClose }) => {
+const pickerRef = React.useRef(null);
+const pickerInstance = React.useRef(null);
+
+React.useEffect(() => {
+const handleOutside = (e) => {
+if (pickerRef.current && !pickerRef.current.contains(e.target)) onClose();
+};
+document.addEventListener('mousedown', handleOutside);
+
+if (pickerRef.current && !pickerInstance.current) {
+pickerInstance.current = new window.EmojiMart.Picker({
+onEmojiSelect,
+previewPosition: 'none'
+});
+pickerRef.current.appendChild(pickerInstance.current);
+}
+
+return () => {
+document.removeEventListener('mousedown', handleOutside);
+};
+}, [onEmojiSelect, onClose]);
+
+return (
+<div className="fixed inset-0 bg-black/20 backdrop-blur-sm flex items-start justify-center z-[1000] pt-24" onPointerDown={(e) => e.stopPropagation()}>
+<div ref={pickerRef} onPointerDown={(e) => e.stopPropagation()} />
+</div>
+);
+};
+// Connector Component
+const Connector = ({ fromItem, toItem, thickness }) => {
+// Attach to middle top of items
+const fromPos = {
+x: fromItem.x + fromItem.width / 2,
+y: fromItem.y
+};
+const toPos = {
+x: toItem.x + toItem.width / 2,
+y: toItem.y
+};
+
+const dx = toPos.x - fromPos.x;
+const dy = toPos.y - fromPos.y;
+const dist = Math.max(1, Math.hypot(dx, dy));
+
+// Physics-y sag
+const maxSag = 140;
+const sag = Math.min(maxSag, 120 / (1 + dist / 220));
+
+// Sideways offset for curve
+const nx = -dy / dist, ny = dx / dist;
+const control = {
+x: fromPos.x + dx / 2 + nx * sag * 0.35,
+y: fromPos.y + dy / 2 + ny * sag * 13.35,
+};
+
+const d = `M ${fromPos.x} ${fromPos.y} Q ${control.x} ${control.y} ${toPos.x} ${toPos.y}`;
+
+return (
+<path
+d={d}
+stroke="#B91C1C" // Changed to deep red
+strokeWidth={thickness}
+fill="none"
+strokeLinecap="round"
+style={{ filter: 'drop-shadow(0 2px 3px rgba(0,0,0,0.4))', pointerEvents: 'none' }}
+/>
+);
+};
+// Toolbar Component
+const Toolbar = ({
+    onAddItem, zoomLevel, onZoomChange, onUndo, onRedo, canUndo, canRedo,
+    onThemeChange, onBackup, onLoad, boardName, currentFont, onFontChange,
+    shadowDepth, onShadowChange, stringThickness, onStringThicknessChange,
+    onResetBoard, onToggleDrawing, isDrawingMode, onSetDrawingTool, drawingTool,
+    onSetDrawingColor, drawingColor, onToggleAreaSelection, isAreaSelectionMode
+}) => {
+    const TBBtn = ({ onClick, title, disabled = false, isActive = false, children }) => (
+        <button
+            onClick={onClick}
+            title={title}
+            disabled={disabled}
+            className={`w-10 h-10 flex items-center justify-center rounded-full bg-white/20 hover:bg-white/40 text-xl transition-all duration-200 transform hover:scale-110 focus:outline-none focus:ring-2 focus:ring-white disabled:opacity-50 ${isActive ? 'bg-blue-500' : ''}`}
+        >
+            {children}
+        </button>
+    );
+
+    const Sep = () => <div className="w-px h-6 bg-white/30 mx-1"></div>;
+
+    return (
+        <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-50 bg-black/30 backdrop-blur-md p-3 rounded-2xl shadow-lg text-white max-w-[95vw]">
+            <div className="flex flex-col items-center gap-2">
+                {/* First Row */}
+                <div className="flex flex-wrap justify-center items-center gap-1">
+    <TBBtn onClick={() => onAddItem(ItemType.Note)} title="Add Sticky Note">📝</TBBtn>
+    <TBBtn onClick={() => onAddItem(ItemType.Image)} title="Upload Image">🖼️</TBBtn>
+    <TBBtn onClick={() => onAddItem(ItemType.Video)} title="Add YouTube Video">▶️</TBBtn>
+    <TBBtn onClick={() => onAddItem(ItemType.Emoji)} title="Add Emoji">😀</TBBtn>
+    <TBBtn onClick={() => onAddItem(ItemType.Link)} title="Add Link">🔗</TBBtn>
+    <Sep />
+    <TBBtn
+        onClick={onToggleDrawing}
+        title="Toggle Drawing Mode"
+        isActive={isDrawingMode}
+    >✏️</TBBtn>
+    <TBBtn
+        onClick={onToggleAreaSelection}
+        title="Area Selection Tool"
+        isActive={isAreaSelectionMode}
+    >📦</TBBtn>
+    <Sep />
+    <TBBtn onClick={onResetBoard} title="Reset Board">🔄</TBBtn>
+    <TBBtn onClick={onUndo} title="Undo (Ctrl+Z)" disabled={!canUndo}>↩️</TBBtn>
+    <TBBtn onClick={onRedo} title="Redo (Ctrl+Y)" disabled={!canRedo}>↪️</TBBtn>
+    <Sep />
+    <TBBtn onClick={onThemeChange} title="Change Theme">🎨</TBBtn>
+    <TBBtn onClick={onBackup} title="Save">💾</TBBtn>
+    <TBBtn onClick={onLoad} title="Load Board">📂</TBBtn>
+</div>
+                {/* Second Row */}
+                {/* Second Row - Back to just the controls */}
+{/* Replace your second row div with this one */}
+<div className="flex flex-wrap justify-center items-center gap-3">
+    {isDrawingMode && (
+        <div className="flex items-center gap-2 bg-black/20 p-1 rounded-full">
+            <div className="flex space-x-1">
+                {DRAWING_COLORS.map(color => (
+                    <button
+                        key={color}
+                        onClick={() => onSetDrawingColor(color)}
+                        className={`w-5 h-5 rounded-full ${drawingColor === color ? 'ring-2 ring-white' : ''}`}
+                        style={{ backgroundColor: color }}
+                        title={`Select ${color} color`}
+                    />
+                ))}
+            </div>
+            <div className="w-px h-5 bg-white/20"></div>
+            <div className="flex space-x-1">
+               <TBBtn
+                    onClick={() => onSetDrawingTool(DrawingTools.PEN)}
+                    title="Pen Tool"
+                    isActive={drawingTool === DrawingTools.PEN}
+                >✏️</TBBtn>
+               <TBBtn
+                    onClick={() => onSetDrawingTool(DrawingTools.ERASER)}
+                    title="Eraser Tool"
+                    isActive={drawingTool === DrawingTools.ERASER}
+                >🧹</TBBtn>
+            </div>
+        </div>
+    )}
+    <div className="flex items-center gap-1 bg-black/20 p-1 rounded-full">
+        <select
+            value={currentFont}
+            onChange={(e) => onFontChange(e.target.value)}
+            className="text-xs px-2 py-1 rounded-full text-black bg-white/80 border-none appearance-none focus:outline-none"
+            title="Font for notes"
+        >
+            {FONT_CHOICES.map(f => (
+                <option key={f.label} value={f.value}>{f.label}</option>
+            ))}
+        </select>
+    </div>
+    <div className="flex items-center gap-2 bg-black/20 p-1 rounded-full px-3">
+        <label className="text-xs text-white/80">Shadow</label>
+        <input
+            type="range" min="0" max="60" step="1" value={shadowDepth}
+            onChange={(e) => onShadowChange(parseInt(e.target.value))}
+            className="w-24"
+        />
+    </div>
+    <div className="flex items-center gap-2 bg-black/20 p-1 rounded-full px-3">
+        <label className="text-xs text-white/80">String</label>
+        <input
+            type="range" min="1" max="40" step="1" value={stringThickness}
+            onChange={(e) => onStringThicknessChange(parseInt(e.target.value))}
+            className="w-24"
+        />
+    </div>
+     <div className="flex items-center gap-2 bg-black/20 p-1 rounded-full px-3">
+        <button
+            onClick={() => onZoomChange(Math.max(ZOOM_MIN, zoomLevel - 0.2))}
+            className="text-lg hover:text-blue-300"
+        >-</button>
+        <span className="text-xs font-medium w-12 text-center tabular-nums">
+            {(zoomLevel * 100).toFixed(0)}%
+        </span>
+        <button
+            onClick={() => onZoomChange(Math.min(ZOOM_MAX, zoomLevel + 0.2))}
+            className="text-lg hover:text-blue-300"
+        >+</button>
+    </div>
+    {/* The board name span that was here has been deleted */}
+</div>
+            </div>
+        </div>
+    );
+};
+// Board Item Component
+const BoardItem = ({
+item, onUpdate, onDelete, onSelect, isSelected, scale,
+onBringForward, onSendBackward, onTransientUpdate,
+shadowDepth, currentFontFamily, isEditing, onSetEditing, isNew
+}) => {
+const itemRef = React.useRef(null);
+const [transientItem, setTransientItem] = React.useState(null);
+const [isDragging, setIsDragging] = React.useState(false);
+const displayedItem = transientItem || item;
+
+const ControlHandle = ({ onPointerDown, cursor, position, title, children }) => (
+<div
+onPointerDown={onPointerDown}
+className={`absolute ${position} w-6 h-6 bg-blue-500 rounded-full flex items-center justify-center text-white shadow-md transform z-10`}
+style={{ cursor }}
+title={title}
+>
+{children}
+</div>
+);
+
+const handleInteractionStart = React.useCallback((e, interactionType) => {
+e.preventDefault();
+e.stopPropagation();
+onSelect(item.id, e.shiftKey);
+const startX = e.clientX,
+startY = e.clientY;
+const initial = item;
+setIsDragging(interactionType === 'drag');
+
+const move = (me) => {
+const dx = me.clientX - startX,
+dy = me.clientY - startY;
+const t = { ...initial };
+
+if (interactionType === 'drag') {
+t.x = initial.x + dx / scale;
+t.y = initial.y + dy / scale;
+} else if (interactionType === 'resize') {
+t.width = Math.max(50, initial.width + dx / scale);
+t.height = Math.max(50, initial.height + dy / scale);
+} else if (interactionType === 'rotate' && itemRef.current) {
+const rect = itemRef.current.getBoundingClientRect();
+const cx = rect.left + rect.width / 2,
+cy = rect.top + rect.height / 2;
+const a0 = Math.atan2(startY - cy, startX - cx) * (180 / Math.PI);
+const a1 = Math.atan2(me.clientY - cy, me.clientX - cx) * (180 / Math.PI);
+t.rotation = initial.rotation + (a1 - a0);
+}
+
+setTransientItem(t);
+onTransientUpdate(t);
+};
+
+const up = () => {
+document.removeEventListener('pointermove', move);
+document.removeEventListener('pointerup', up);
+onTransientUpdate(null);
+setIsDragging(false);
+
+setTransientItem(curr => {
+if (curr) {
+const changed = JSON.stringify(curr) !== JSON.stringify(initial);
+if (changed) {
+const { x, y, width, height, rotation } = curr;
+onUpdate(item.id, { x, y, width, height, rotation });
+}
+}
+return null;
+});
+};
+
+document.addEventListener('pointermove', move);
+document.addEventListener('pointerup', up);
+}, [item, onUpdate, onSelect, scale, onTransientUpdate]);
+
+const renderContent = () => {
+switch (displayedItem.type) {
+case ItemType.Note:
+return (
+<StickyNote
+item={displayedItem}
+onUpdate={onUpdate}
+isSelected={isSelected}
+currentFontFamily={currentFontFamily}
+isEditing={isEditing}
+onSetEditing={onSetEditing}
+/>
+);
+case ItemType.Image:
+return <ImageItem item={displayedItem} />;
+case ItemType.Video:
+return <VideoItem item={displayedItem} isDragging={isDragging} iframeEnabled={isSelected} />;
+case ItemType.Emoji:
+return <EmojiItem item={displayedItem} />;
+case ItemType.Link:
+return <LinkItem item={displayedItem} />;
+default:
+return null;
+}
+};
+
+const isPngImage = displayedItem.type === ItemType.Image &&
+displayedItem.content.startsWith('data:image/png;');
+const showContainerShadow = displayedItem.type !== ItemType.Emoji && !isPngImage;
+const boxShadow = showContainerShadow
+? `0 ${Math.round(shadowDepth / 2)}px ${shadowDepth * 2}px rgba(0,0,0,${0.02 * shadowDepth}), 0 ${Math.round(shadowDepth / 3)}px ${shadowDepth}px rgba(0,0,0,${0.025 * shadowDepth})`
+: 'none';
+
+return (
+<div
+ref={itemRef}
+className={`absolute transition-shadow duration-200 board-item-container ${isSelected ? 'board-item-selected' : ''} ${isNew ? 'item-appear' : ''}`}
+style={{
+left: displayedItem.x,
+top: displayedItem.y,
+width: displayedItem.width,
+height: displayedItem.height,
+transform: `rotate(${displayedItem.rotation}deg)`,
+zIndex: displayedItem.zIndex
+}}
+onPointerDown={(e) => {
+// Allow dragging via general area, but if clicking inside inputs/buttons/iframe, skip.
+if (e.target.closest('textarea, button, a, .absolute.w-6-h-6')) return;
+
+// Video: drag must begin on the drag bar
+if (item.type === ItemType.Video) {
+if (e.target?.dataset?.dragHandle === 'true') {
+handleInteractionStart(e, 'drag');
+} else {
+// If not selected, select
+if (!isSelected) onSelect(item.id, e.shiftKey);
+}
+return;
+}
+
+handleInteractionStart(e, 'drag');
+}}
+onDoubleClick={(e) => {
+if (item.type === ItemType.Note) {
+e.stopPropagation();
+onSetEditing(true);
+}
+}}
+>
+<div
+className="w-full h-full rounded-lg overflow-hidden"
+style={{ cursor: 'grab', boxShadow }}
+>
+{renderContent()}
+</div>
+
+{/* Pin on sticky notes AND images */}
+{(displayedItem.type === ItemType.Note || displayedItem.type === ItemType.Image) && (
+<div
+className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-20 w-40 h-40 z-10 rotate-[-15deg] pointer-events-none"
+style={{ backgroundImage: `url(${PIN_URL})`, backgroundSize: 'contain', backgroundRepeat: 'no-repeat' }}
+/>
+)}
+
+{isSelected && (
+<>
+<ControlHandle
+onPointerDown={(e) => { e.stopPropagation(); onDelete(item.id); }}
+cursor="pointer"
+position="top-0 right-0 translate-x-1/2 -translate-y-1/2"
+title="Delete"
+>
+<svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+</svg>
+</ControlHandle>
+
+<ControlHandle
+onPointerDown={(e) => handleInteractionStart(e, 'resize')}
+cursor="se-resize"
+position="bottom-0 right-0 translate-x-1/2 translate-y-1/2"
+title="Resize"
+>
+<svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 transform rotate-45" viewBox="0 0 20 20" fill="currentColor">
+<path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
+</svg>
+</ControlHandle>
+
+<ControlHandle
+onPointerDown={(e) => handleInteractionStart(e, 'rotate')}
+cursor="crosshair"
+position="top-0 left-0 -translate-x-1/2 -translate-y-1/2"
+title="Rotate"
+>
+<svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h5M20 20v-5h-5M4 20h5v-5M20 4h-5v5" />
+</svg>
+</ControlHandle>
+
+<ControlHandle
+onPointerDown={(e) => handleInteractionStart(e, 'drag')}
+cursor="move"
+position="bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2"
+title="Move"
+>
+<svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+<path d="M10 3a1 1 0 011 1v2.586l3.293-3.293a1 1 0 111.414 1.414L12.414 8H15a1 1 0 110 2h-2.586l3.293 3.293a1 1 0 11-1.414 1.414L11 12.414V15a1 1 0 11-2 0v-2.586l-3.293 3.293a1 1 0 11-1.414-1.414L7.586 12H5a1 1 0 110-2h2.586L4.293 6.707a1 1 0 011.414-1.414L9 8.586V6a1 1 0 011-1z" />
+</svg>
+</ControlHandle>
+
+<ControlHandle
+onPointerDown={onBringForward}
+cursor="pointer"
+position="top-1/4 left-0 -translate-x-1/2 -translate-y-1/2"
+title="Bring Forward"
+>🔼</ControlHandle>
+
+<ControlHandle
+onPointerDown={onSendBackward}
+cursor="pointer"
+position="top-3/4 left-0 -translate-x-1/2 -translate-y-1/2"
+title="Send Backward"
+>🔽</ControlHandle>
+</>
+)}
+</div>
+);
+};
+// Welcome Guide Component
+const WelcomeGuide = ({ onClose }) => {
+return (
+<div className="welcome-overlay">
+<div className="welcome-content">
+<h1 className="welcome-title">Welcome to Infinite Corkboard!</h1>
+<p className="welcome-text">
+Get started organizing your ideas with this digital corkboard. Here are some key features to help you get started:
+</p>
+<div className="welcome-features">
+<div className="welcome-feature">
+<div className="welcome-feature-icon">📝</div>
+<div className="welcome-feature-text">Double-click anywhere on the board to create a new sticky note</div>
+</div>
+<div className="welcome-feature">
+<div className="welcome-feature-icon">✏️</div>
+<div className="welcome-feature-text">Use the drawing tool to sketch directly on your board</div>
+</div>
+<div className="welcome-feature">
+<div className="welcome-feature-icon">📦</div>
+<div className="welcome-feature-text">Group multiple items together with the area selection tool</div>
+</div>
+<div className="welcome-feature">
+<div className="welcome-feature-icon">🔗</div>
+<div className="welcome-feature-text">Add web links that automatically generate preview cards</div>
+</div>
+<div className="welcome-feature">
+<div className="welcome-feature-icon">📋</div>
+<div className="welcome-feature-text">Copy and paste items with Ctrl+C and Ctrl+V</div>
+</div>
+<div className="welcome-feature">
+<div className="welcome-feature-icon">🔄</div>
+<div className="welcome-feature-text">Reset your board anytime with the reset button</div>
+</div>
+</div>
+<button
+onClick={onClose}
+className="w-full py-3 bg-blue-500 text-white font-medium rounded-lg hover:bg-blue-600 transition-colors"
+>
+Get Started
+</button>
+</div>
+</div>
+);
+};
+// Main App Component
+const App = ({ board }) => {
+const { state, setState, undo, redo, canUndo, canRedo } = usePersistentHistory(
+`corkboard-${board.id}`,
+{ items: [], connections: [], drawings: [] }
+);
+
+const { items, connections, drawings } = state;
+const [selectedItemIds, setSelectedItemIds] = React.useState([]);
+const [zIndexCounter, setZIndexCounter] = React.useState(() =>
+items.length > 0 ? Math.max(...items.map(i => i.zIndex), INITIAL_Z_INDEX) : INITIAL_Z_INDEX
+);
+
+const [theme, setTheme] = React.useState('white');
+const [isEmojiPickerOpen, setIsEmojiPickerOpen] = React.useState(false);
+const [transientUpdate, setTransientUpdate] = React.useState(null);
+const [dialogState, setDialogState] = React.useState({
+isOpen: false,
+type: null,
+title: '',
+placeholder: '',
+defaultValue: ''
+});
+const [confirmationState, setConfirmationState] = React.useState({
+isOpen: false,
+title: '',
+message: '',
+onConfirm: null
+});
+
+// Global style controls
+const [currentFontFamily, setCurrentFontFamily] = React.useState(FONT_CHOICES[0].value);
+const [shadowDepth, setShadowDepth] = React.useState(10);
+const [stringThickness, setStringThickness] = React.useState(3);
+
+// Drawing state
+const [isDrawingMode, setIsDrawingMode] = React.useState(false);
+const [drawingTool, setDrawingTool] = React.useState(DrawingTools.PEN);
+const [drawingColor, setDrawingColor] = React.useState(DRAWING_COLORS[0]);
+const [isDrawing, setIsDrawing] = React.useState(false);
+
+// Area selection state
+const [isAreaSelectionMode, setIsAreaSelectionMode] = React.useState(false);
+const [selectionBox, setSelectionBox] = React.useState(null);
+const [groupedItems, setGroupedItems] = React.useState([]);
+
+// Editing state
+const [editingItemId, setEditingItemId] = React.useState(null);
+
+// Copy/paste state
+const [copiedItems, setCopiedItems] = React.useState([]);
+
+// New item animation
+const [newItemIds, setNewItemIds] = React.useState([]);
+
+// Welcome guide
+const [showWelcome, setShowWelcome] = React.useState(() => {
+return !localStorage.getItem('corkboard-welcome-seen');
+});
+
+const boardViewportRef = React.useRef(null);
+const canvasRef = React.useRef(null);
+const { pan, zoom, setZoom } = useBoardInteraction(boardViewportRef);
+
+// Clear new item animation after animation completes
+React.useEffect(() => {
+if (newItemIds.length > 0) {
+const timer = setTimeout(() => {
+setNewItemIds([]);
+}, 300);
+return () => clearTimeout(timer);
+}
+}, [newItemIds]);
+
+// Set up canvas for drawing
+React.useEffect(() => {
+const canvas = canvasRef.current;
+if (!canvas) return;
+
+// Update canvas size when zoom changes
+canvas.width = 5000;
+canvas.height = 5000;
+
+const ctx = canvas.getContext('2d');
+ctx.lineCap = 'round';
+ctx.lineJoin = 'round';
+
+// Redraw all existing drawings
+redrawCanvas();
+}, [zoom, drawings]);
+
+const redrawCanvas = () => {
+const canvas = canvasRef.current;
+if (!canvas) return;
+
+const ctx = canvas.getContext('2d');
+ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+// Redraw all saved drawings
+drawings.forEach(drawing => {
+ctx.strokeStyle = drawing.color;
+ctx.lineWidth = drawing.width;
+ctx.beginPath();
+
+drawing.points.forEach((point, i) => {
+if (i === 0) {
+ctx.moveTo(point.x, point.y);
+} else {
+ctx.lineTo(point.x, point.y);
+}
+});
+
+ctx.stroke();
+});
+};
+
+const startDrawing = (e) => {
+if (!isDrawingMode) return;
+
+const canvas = canvasRef.current;
+if (!canvas) return;
+
+const rect = canvas.getBoundingClientRect();
+const x = (e.clientX - rect.left - pan.x) / zoom;
+const y = (e.clientY - rect.top - pan.y) / zoom;
+
+setIsDrawing(true);
+
+const ctx = canvas.getContext('2d');
+ctx.strokeStyle = drawingTool === DrawingTools.ERASER ? '#FFFFFF' : drawingColor;
+ctx.lineWidth = drawingTool === DrawingTools.ERASER ? 20 : 3;
+ctx.beginPath();
+ctx.moveTo(x, y);
+
+// Start a new drawing
+const newDrawing = {
+id: `drawing-${Date.now()}`,
+tool: drawingTool,
+color: drawingTool === DrawingTools.ERASER ? '#FFFFFF' : drawingColor,
+width: drawingTool === DrawingTools.ERASER ? 20 : 3,
+points: [{x, y}]
+};
+
+setState(prev => ({
+...prev,
+drawings: [...prev.drawings, newDrawing]
+}));
+};
+
+const draw = (e) => {
+if (!isDrawing || !isDrawingMode) return;
+
+const canvas = canvasRef.current;
+if (!canvas) return;
+
+const rect = canvas.getBoundingClientRect();
+const x = (e.clientX - rect.left - pan.x) / zoom;
+const y = (e.clientY - rect.top - pan.y) / zoom;
+
+const ctx = canvas.getContext('2d');
+ctx.lineTo(x, y);
+ctx.stroke();
+
+// Add point to current drawing
+if (drawings.length > 0) {
+const lastDrawing = drawings[drawings.length - 1];
+const updatedDrawing = {
+...lastDrawing,
+points: [...lastDrawing.points, {x, y}]
+};
+
+setState(prev => ({
+...prev,
+drawings: [...prev.drawings.slice(0, -1), updatedDrawing]
+}));
+}
+};
+
+const stopDrawing = () => {
+setIsDrawing(false);
+};
+
+const startAreaSelection = (e) => {
+if (!isAreaSelectionMode) return;
+
+const rect = boardViewportRef.current.getBoundingClientRect();
+const x = e.clientX - rect.left;
+const y = e.clientY - rect.top;
+
+setSelectionBox({
+startX: x,
+startY: y,
+endX: x,
+endY: y
+});
+};
+
+const updateAreaSelection = (e) => {
+if (!selectionBox || !isAreaSelectionMode) return;
+
+const rect = boardViewportRef.current.getBoundingClientRect();
+const x = e.clientX - rect.left;
+const y = e.clientY - rect.top;
+
+setSelectionBox(prev => ({
+...prev,
+endX: x,
+endY: y
+}));
+};
+
+const endAreaSelection = () => {
+if (!selectionBox || !isAreaSelectionMode) return;
+
+const { startX, startY, endX, endY } = selectionBox;
+
+// Calculate selection box coordinates in board space
+const left = Math.min(startX, endX);
+const top = Math.min(startY, endY);
+const right = Math.max(startX, endX);
+const bottom = Math.max(startY, endY);
+
+// Find items within the selection box
+const selectedItems = items.filter(item => {
+const itemLeft = (item.x * zoom) + pan.x;
+const itemTop = (item.y * zoom) + pan.y;
+const itemRight = ((item.x + item.width) * zoom) + pan.x;
+const itemBottom = ((item.y + item.height) * zoom) + pan.y;
+
+return (
+itemLeft >= left &&
+itemTop >= top &&
+itemRight <= right &&
+itemBottom <= bottom
+);
+});
+
+// Group the selected items
+if (selectedItems.length > 0) {
+setGroupedItems(selectedItems.map(item => item.id));
+setSelectedItemIds(selectedItems.map(item => item.id));
+}
+
+setSelectionBox(null);
+};
+
+// Keyboard shortcuts
+React.useEffect(() => {
+const key = (e) => {
+const target = e.target;
+if (e.key === 'Escape') {
+e.preventDefault();
+setSelectedItemIds([]);
+setGroupedItems([]);
+if (isDrawingMode) setIsDrawingMode(false);
+if (isAreaSelectionMode) setIsAreaSelectionMode(false);
+return;
+}
+
+if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') return;
+
+// Copy/paste functionality
+if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+e.preventDefault();
+// Copy selected items
+const itemsToCopy = items.filter(item => selectedItemIds.includes(item.id));
+setCopiedItems(itemsToCopy);
+return;
+}
+
+if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+e.preventDefault();
+// Paste copied items
+if (copiedItems.length === 0) return;
+
+const center = {
+x: (boardViewportRef.current?.clientWidth || window.innerWidth) / 2 - pan.x,
+y: (boardViewportRef.current?.clientHeight || window.innerHeight) / 2 - pan.y
+};
+
+const newItems = copiedItems.map(item => {
+const offset = 20; // Offset pasted items slightly
+const newZ = zIndexCounter + 1;
+return {
+...item,
+id: `item-${Date.now()}-${Math.random()}`,
+x: center.x - item.width / 2 + offset,
+y: center.y - item.height / 2 + offset,
+zIndex: newZ
+};
+});
+
+setState(prev => ({
+...prev,
+items: [...prev.items, ...newItems]
+}));
+
+setZIndexCounter(zIndexCounter + newItems.length);
+setNewItemIds(newItems.map(item => item.id));
+setSelectedItemIds(newItems.map(item => item.id));
+return;
+}
+
+// Undo/Redo
+if (e.ctrlKey || e.metaKey) {
+if (e.key === 'z') {
+e.preventDefault();
+e.shiftKey ? redo() : undo();
+} else if (e.key === 'y') {
+e.preventDefault();
+redo();
+}
+}
+
+// Delete selected items
+if ((e.key === 'Delete' || e.key === 'Backspace') && selectedItemIds.length > 0) {
+e.preventDefault();
+setState(prev => ({
+items: prev.items.filter(it => !selectedItemIds.includes(it.id)),
+connections: prev.connections.filter(c =>
+!selectedItemIds.includes(c.fromId) && !selectedItemIds.includes(c.toId)
+)
+}));
+setSelectedItemIds([]);
+setGroupedItems([]);
+}
+};
+
+window.addEventListener('keydown', key);
+return () => window.removeEventListener('keydown', key);
+}, [
+undo, redo, setState, selectedItemIds, items, zIndexCounter, copiedItems,
+isDrawingMode, isAreaSelectionMode, groupedItems, pan, boardViewportRef
+]);
+
+const getCenterPosition = () => {
+if (!boardViewportRef.current) return { x: 2500, y: 2500 };
+const rect = boardViewportRef.current.getBoundingClientRect();
+return {
+x: (rect.width / 2 - pan.x) / zoom,
+y: (rect.height / 2 - pan.y) / zoom
+};
+};
+
+const addNewItem = (type, content, extra = {}) => {
+const center = getCenterPosition();
+const newZ = zIndexCounter + 1;
+const base = {
+id: `item-${Date.now()}`,
+type,
+x: center.x - 125,
+y: center.y - 125,
+width: 250,
+height: 250,
+rotation: 0,
+zIndex: newZ,
+content,
+color: type === ItemType.Note ? NOTE_COLORS[Math.floor(Math.random() * NOTE_COLORS.length)] : undefined,
+fontSize: type === ItemType.Note ? FONT_SIZE_DEFAULT : undefined,
+fontFamily: type === ItemType.Note ? currentFontFamily : undefined,
+...extra
+};
+
+setState(prev => ({ ...prev, items: [...prev.items, base] }));
+setZIndexCounter(newZ);
+setSelectedItemIds([base.id]);
+setNewItemIds([base.id]);
+};
+
+const handleAddItem = (type) => {
+if (type === ItemType.Note) addNewItem(ItemType.Note, 'Write something...');
+else if (type === ItemType.Image) {
+const input = document.createElement('input');
+input.type = 'file';
+input.accept = 'image/*';
+input.onchange = (e) => {
+const file = e.target.files?.[0];
+if (file) {
+const reader = new FileReader();
+reader.onload = (re) => {
+if (re.target?.result) addNewItem(ItemType.Image, re.target.result, { width: 400, height: 300 });
+};
+reader.readAsDataURL(file);
+}
+};
+input.click();
+} else if (type === ItemType.Video) {
+setDialogState({
+isOpen: true,
+type: ItemType.Video,
+title: 'Add YouTube Video',
+placeholder: 'https://www.youtube.com/watch?v=...',
+defaultValue: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+});
+} else if (type === ItemType.Emoji) setIsEmojiPickerOpen(true);
+else if (type === ItemType.Link) {
+setDialogState({
+isOpen: true,
+type: ItemType.Link,
+title: 'Add Web Link',
+placeholder: 'https://example.com',
+defaultValue: 'https://'
+});
+}
+};
+
+const handleDialogSubmit = (value) => {
+if (dialogState.type === ItemType.Video) {
+addNewItem(ItemType.Video, value, { width: 480, height: 270 });
+} else if (dialogState.type === ItemType.Link) {
+// Validate URL
+try {
+new URL(value);
+addNewItem(ItemType.Link, value, { width: 300, height: 200 });
+} catch (e) {
+alert('Please enter a valid URL');
+}
+}
+setDialogState(p => ({ ...p, isOpen: false }));
+};
+
+const handleEmojiSelect = (emoji) => {
+addNewItem(ItemType.Emoji, emoji.native, { width: 150, height: 150 });
+setIsEmojiPickerOpen(false);
+};
+
+const handleUpdateItem = React.useCallback((id, updates) => {
+setState(prev => ({
+...prev,
+items: prev.items.map(it => it.id === id ? { ...it, ...updates } : it)
+}));
+}, [setState]);
+
+const handleDeleteItem = React.useCallback((id) => {
+setState(prev => ({
+items: prev.items.filter(it => it.id !== id),
+connections: prev.connections.filter(c => c.fromId !== id && c.toId !== id)
+}));
+setSelectedItemIds(prev => prev.filter(sid => sid !== id));
+setGroupedItems(prev => prev.filter(sid => sid !== id));
+}, [setState]);
+
+const handleSelectItem = React.useCallback((id, shift) => {
+setSelectedItemIds(prev => {
+if (shift) return prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id];
+return (prev.length === 1 && prev[0] === id) ? prev : [id];
+});
+
+const it = items.find(i => i.id === id);
+if (it) {
+const newZ = zIndexCounter + 1;
+handleUpdateItem(id, { zIndex: newZ });
+setZIndexCounter(newZ);
+}
+}, [items, zIndexCounter, handleUpdateItem]);
+
+const handleResetBoard = () => {
+setConfirmationState({
+isOpen: true,
+title: 'Reset Corkboard',
+message: 'Are you sure you want to reset the corkboard? This will remove all items and cannot be undone.',
+onConfirm: () => {
+setState({ items: [], connections: [], drawings: [] });
+setSelectedItemIds([]);
+setGroupedItems([]);
+setZIndexCounter(INITIAL_Z_INDEX);
+setConfirmationState({ isOpen: false, title: '', message: '', onConfirm: null });
+}
+});
+};
+
+const THEMES = ['white', 'dark', 'orange'];
+const handleThemeChange = () => setTheme(cur => THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length]);
+
+// Save using File System Access API
+const handleBackup = async () => {
+try {
+const data = JSON.stringify({ name: board.name, items, connections, drawings }, null, 2);
+if (window.showSaveFilePicker) {
+const handle = await window.showSaveFilePicker({
+suggestedName: `${board.name.replace(/\s+/g, '_')}_backup.json`,
+types: [{ description: 'Corkboard JSON', accept: { 'application/json': ['.json'] } }]
+});
+const writable = await handle.createWritable();
+await writable.write(new Blob([data], { type: 'application/json' }));
+await writable.close();
+} else {
+// Fallback: download
+const link = document.createElement('a');
+link.href = URL.createObjectURL(new Blob([data], { type: 'application/json' }));
+link.download = `${board.name.replace(/\s+/g, '_')}_backup.json`;
+link.click();
+URL.revokeObjectURL(link.href);
+}
+} catch (err) {
+console.error(err);
+alert('Save failed.');
+}
+};
+
+const handleLoadBackup = () => {
+const input = document.createElement('input');
+input.type = 'file';
+input.accept = '.json,application/json';
+input.onchange = e => {
+const file = e.target.files?.[0];
+if (!file) return;
+
+const reader = new FileReader();
+reader.onload = re => {
+try {
+const data = JSON.parse(re.target?.result);
+if (data && Array.isArray(data.items)) {
+setState({
+items: data.items,
+connections: data.connections || [],
+drawings: data.drawings || []
+});
+setZIndexCounter(data.items.length > 0 ?
+Math.max(...data.items.map(i => i.zIndex)) : INITIAL_Z_INDEX
+);
+} else {
+alert('Invalid backup file.');
+}
+} catch {
+alert('Failed to parse.');
+}
+};
+reader.readAsText(file);
+};
+input.click();
+};
+
+const handleZIndex = (itemId, dir) => {
+const sorted = [...items].sort((a, b) => a.zIndex - b.zIndex);
+const idx = sorted.findIndex(i => i.id === itemId);
+
+if (dir === 'forward' && idx < sorted.length - 1) {
+const other = sorted[idx + 1];
+handleUpdateItem(itemId, { zIndex: other.zIndex });
+handleUpdateItem(other.id, { zIndex: sorted[idx].zIndex });
+} else if (dir === 'backward' && idx > 0) {
+const other = sorted[idx - 1];
+handleUpdateItem(itemId, { zIndex: other.zIndex });
+handleUpdateItem(other.id, { zIndex: sorted[idx].zIndex });
+}
+};
+
+const handleConnectItems = () => {
+if (selectedItemIds.length < 2) return;
+
+const newConnections = [];
+for (let i = 0; i < selectedItemIds.length - 1; i++) {
+const fromId = selectedItemIds[i],
+toId = selectedItemIds[i + 1];
+const exists = connections.some(c =>
+(c.fromId === fromId && c.toId === toId) ||
+(c.fromId === toId && c.toId === fromId)
+);
+
+if (!exists) {
+newConnections.push({
+id: `conn-${fromId}-${toId}-${Date.now()}`,
+fromId,
+toId
+});
+}
+}
+
+if (newConnections.length > 0) {
+setState(prev => ({
+...prev,
+connections: [...prev.connections, ...newConnections]
+}));
+}
+};
+
+const handleTransientUpdate = React.useCallback((update) => setTransientUpdate(update), []);
+
+const handleSetEditing = (itemId, isEditing) => {
+if (isEditing) {
+setEditingItemId(itemId);
+} else {
+setEditingItemId(null);
+}
+};
+
+const handleCanvasDoubleClick = (e) => {
+// Only create a new note if we're not in drawing or area selection mode
+if (!isDrawingMode && !isAreaSelectionMode && !e.target.closest('.board-item-container')) {
+const rect = boardViewportRef.current.getBoundingClientRect();
+const x = (e.clientX - rect.left - pan.x) / zoom;
+const y = (e.clientY - rect.top - pan.y) / zoom;
+
+const newZ = zIndexCounter + 1;
+const newNote = {
+id: `item-${Date.now()}`,
+type: ItemType.Note,
+x: x - 125,
+y: y - 125,
+width: 250,
+height: 250,
+rotation: 0,
+zIndex: newZ,
+content: 'Write something...',
+color: NOTE_COLORS[Math.floor(Math.random() * NOTE_COLORS.length)],
+fontSize: FONT_SIZE_DEFAULT,
+fontFamily: currentFontFamily
+};
+
+setState(prev => ({
+...prev,
+items: [...prev.items, newNote]
+}));
+
+setZIndexCounter(newZ);
+setSelectedItemIds([newNote.id]);
+setNewItemIds([newNote.id]);
+setEditingItemId(newNote.id);
+}
+};
+
+const handleWelcomeClose = () => {
+setShowWelcome(false);
+localStorage.setItem('corkboard-welcome-seen', 'true');
+};
+
+const displayedItems = React.useMemo(
+() => transientUpdate ? items.map(it => it.id === transientUpdate.id ? transientUpdate : it) : items,
+[items, transientUpdate]
+);
+
+// Apply font change
+const applyFontChange = (fontVal) => {
+setCurrentFontFamily(fontVal);
+if (selectedItemIds.length > 0) {
+selectedItemIds.forEach(id => {
+const it = items.find(x => x.id === id);
+if (it && it.type === ItemType.Note) handleUpdateItem(id, { fontFamily: fontVal });
+});
+}
+};
+
+// Calculate selection box position and dimensions
+const getSelectionBoxStyle = () => {
+if (!selectionBox) return {};
+
+const { startX, startY, endX, endY } = selectionBox;
+const left = Math.min(startX, endX);
+const top = Math.min(startY, endY);
+const width = Math.abs(endX - startX);
+const height = Math.abs(endY - startY);
+
+return {
+left: `${left}px`,
+top: `${top}px`,
+width: `${width}px`,
+height: `${height}px`
+};
+};
+
+// Update canvas pointer events based on drawing mode
+React.useEffect(() => {
+const canvas = canvasRef.current;
+if (!canvas) return;
+
+if (isDrawingMode) {
+canvas.classList.add('active');
+} else {
+canvas.classList.remove('active');
+}
+}, [isDrawingMode]);
+
+return (
+<div className={`w-screen h-screen flex flex-col overflow-hidden theme-${theme}`}>
+{showWelcome && <WelcomeGuide onClose={handleWelcomeClose} />}
+
+<Toolbar
+onAddItem={handleAddItem}
+zoomLevel={zoom}
+onZoomChange={setZoom}
+onUndo={undo}
+onRedo={redo}
+canUndo={canUndo}
+canRedo={canRedo}
+onThemeChange={handleThemeChange}
+onBackup={handleBackup}
+onLoad={handleLoadBackup}
+boardName={board.name}
+currentFont={currentFontFamily}
+onFontChange={applyFontChange}
+shadowDepth={shadowDepth}
+onShadowChange={setShadowDepth}
+stringThickness={stringThickness}
+onStringThicknessChange={setStringThickness}
+onResetBoard={handleResetBoard}
+onToggleDrawing={() => setIsDrawingMode(!isDrawingMode)}
+isDrawingMode={isDrawingMode}
+onSetDrawingTool={setDrawingTool}
+drawingTool={drawingTool}
+onSetDrawingColor={setDrawingColor}
+drawingColor={drawingColor}
+onToggleAreaSelection={() => setIsAreaSelectionMode(!isAreaSelectionMode)}
+isAreaSelectionMode={isAreaSelectionMode}
+/>
+
+{selectedItemIds.length >= 2 && (
+<button
+onClick={handleConnectItems}
+className="absolute top-24 left-1/2 -translate-x-1/2 z-50 px-6 py-3 bg-blue-600 text-white font-bold rounded-full shadow-lg hover:bg-blue-700 transition-all transform hover:scale-105"
+>
+{`Connect (${selectedItemIds.length})`}
+</button>
+)}
+
+<div
+ref={boardViewportRef}
+className="flex-grow w-full h-full overflow-hidden cursor-grab active:cursor-grabbing"
+onPointerDown={(e) => {
+if (!e.target.closest('.board-item-container')) {
+setSelectedItemIds([]);
+setGroupedItems([]);
+
+if (isDrawingMode) {
+startDrawing(e);
+} else if (isAreaSelectionMode) {
+startAreaSelection(e);
+}
+}
+}}
+onPointerMove={(e) => {
+if (isDrawing && isDrawingMode) {
+draw(e);
+} else if (selectionBox && isAreaSelectionMode) {
+updateAreaSelection(e);
+}
+}}
+onPointerUp={() => {
+if (isDrawing) {
+stopDrawing();
+} else if (selectionBox) {
+endAreaSelection();
+}
+}}
+onPointerLeave={() => {
+if (isDrawing) {
+stopDrawing();
+} else if (selectionBox) {
+endAreaSelection();
+}
+}}
+onDoubleClick={handleCanvasDoubleClick}
+>
+<canvas
+ref={canvasRef}
+className="drawing-canvas"
+style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
+/>
+
+<div
+className="absolute transform-gpu"
+style={{
+width: 5000,
+height: 5000,
+transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+transformOrigin: '0 0'
+}}
+>
+{/* SVG connections with variable "physicsy" sag and thickness */}
+<svg
+className="absolute top-0 left-0 w-full h-full pointer-events-none"
+style={{ overflow: 'visible' }}
+>
+<g>
+{connections.map(conn => {
+const fromItem = displayedItems.find(i => i.id === conn.fromId);
+const toItem = displayedItems.find(i => i.id === conn.toId);
+return (fromItem && toItem)
+? <Connector
+key={conn.id}
+fromItem={fromItem}
+toItem={toItem}
+thickness={stringThickness}
+/>
+: null;
+})}
+</g>
+</svg>
+
+{displayedItems.map(it => (
+<BoardItem
+key={it.id}
+item={it}
+onUpdate={handleUpdateItem}
+onDelete={handleDeleteItem}
+onSelect={handleSelectItem}
+isSelected={selectedItemIds.includes(it.id)}
+scale={zoom}
+onBringForward={() => handleZIndex(it.id, 'forward')}
+onSendBackward={() => handleZIndex(it.id, 'backward')}
+onTransientUpdate={handleTransientUpdate}
+shadowDepth={shadowDepth}
+currentFontFamily={currentFontFamily}
+isEditing={editingItemId === it.id}
+onSetEditing={(isEditing) => handleSetEditing(it.id, isEditing)}
+isNew={newItemIds.includes(it.id)}
+/>
+))}
+
+{/* Selection box */}
+{selectionBox && (
+<div className="selection-box" style={getSelectionBoxStyle()} />
+)}
+</div>
+</div>
+
+<InputDialog
+isOpen={dialogState.isOpen}
+onClose={() => setDialogState(p => ({ ...p, isOpen: false }))}
+onSubmit={handleDialogSubmit}
+title={dialogState.title}
+placeholder={dialogState.placeholder}
+defaultValue={dialogState.defaultValue}
+submitButtonText="Add"
+/>
+
+<ConfirmationDialog
+isOpen={confirmationState.isOpen}
+onClose={() => setConfirmationState({ isOpen: false, title: '', message: '', onConfirm: null })}
+onConfirm={confirmationState.onConfirm}
+title={confirmationState.title}
+message={confirmationState.message}
+/>
+
+{isEmojiPickerOpen && (
+<EmojiPicker
+onEmojiSelect={handleEmojiSelect}
+onClose={() => setIsEmojiPickerOpen(false)}
+/>
+)}
+</div>
+);
+};
+// Main component
+const Main = () => {
+const defaultBoard = { id: 'default-board', name: 'My Corkboard' };
+return <App board={defaultBoard} />;
+};
+// Mount the app
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+<React.StrictMode>
+<Main />
+</React.StrictMode>
+);
+</script>
+</body>
+</html>
